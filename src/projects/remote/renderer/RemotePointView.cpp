@@ -24,38 +24,9 @@ constexpr char* jTrain = "train";
 constexpr char* jViewMat = "view_matrix";
 constexpr char* jViewProjMat = "view_projection_matrix";
 constexpr char* jScalingModifier = "scaling_modifier";
+constexpr char* jSHsPython = "shs_python";
+constexpr char* jRotScalePython = "rot_scale_python";
 constexpr char* jKeepAlive = "keep_alive";
-constexpr char* jRender = "render_mode";
-
-std::map<std::string, double> globalMetricsDict;
-
-
-void sibr::RemotePointView::set_render_items(boost::asio::ip::tcp::socket& sock) {
-			uint32_t data_length;
-			boost::system::error_code ec;
-			// Read the length of the serialized data
-			boost::asio::read(sock, boost::asio::buffer(&data_length, sizeof(data_length)), ec);
-			if (ec) {
-				throw boost::system::system_error(ec); // Or handle error as appropriate
-			}
-			// Read the serialized data
-			std::vector<char> serialized_data(data_length);
-			boost::asio::read(sock, boost::asio::buffer(serialized_data), ec);
-			if (ec) {
-				throw boost::system::system_error(ec); // Or handle error as appropriate
-			}
-			// Deserialize the data to get the list of strings
-			json deserialized_data = json::parse(serialized_data.begin(), serialized_data.end());
-			std::vector<std::string> string_list = deserialized_data.get<std::vector<std::string>>();
-
-			//  include an additional item in _renderItems vector that corresponds to the "Show Input Points" option
-			string_list.push_back("Show Input Points");
-			// Now you can do operations with string_list
-			for (const auto& str : string_list) {
-				std::cout << str << std::endl; // Example operation
-			}
-			_renderItems = string_list;
-		}
 
 void sibr::RemotePointView::send_receive()
 {
@@ -77,7 +48,6 @@ void sibr::RemotePointView::send_receive()
 			} while (keep_running && ec.failed());
 
 			SIBR_LOG << "Connected!" << std::endl;
-			set_render_items(sock);
 			while (keep_running)
 			{
 				{
@@ -86,6 +56,8 @@ void sibr::RemotePointView::send_receive()
 					// Serialize our arbitrary data to something simple, yet convenient for both sides
 					json sendData;
 					sendData[jTrain] = _doTrainingBool ? 1 : 0;
+					sendData[jSHsPython] = _doSHsPython ? 1 : 0;
+					sendData[jRotScalePython] = _doRotScalePython ? 1 : 0;
 					sendData[jScalingModifier] = _scalingModifier;
 					sendData[jResX] = _remoteInfo.imgResolution.x();
 					sendData[jResY] = _remoteInfo.imgResolution.y();
@@ -96,7 +68,6 @@ void sibr::RemotePointView::send_receive()
 					sendData[jKeepAlive] = _keepAlive ? 1 : 0;
 					sendData[jViewMat] = std::vector<float>((float*)&_remoteInfo.view, ((float*)&_remoteInfo.view) + 16);
 					sendData[jViewProjMat] = std::vector<float>((float*)&_remoteInfo.viewProj, ((float*)&_remoteInfo.viewProj) + 16);
-					sendData[jRender] = (_item_current == 6) ? 0 : _item_current;
 
 					std::string message = sendData.dump();
 					uint32_t messageLength = message.size();
@@ -122,27 +93,6 @@ void sibr::RemotePointView::send_receive()
 				boost::asio::read(sock, boost::asio::buffer(sceneName.data(), sceneLength));
 				sceneName.push_back(0);
 				current_scene = std::string(sceneName.data());
-
-				uint32_t data_length;
-				boost::system::error_code ec;
-				// Read the length of the serialized data
-				boost::asio::read(sock, boost::asio::buffer(&data_length, sizeof(data_length)), ec);
-				if (ec) {
-					throw boost::system::system_error(ec); // Or handle error as appropriate
-				}
-				// Read the serialized data
-				std::vector<char> serialized_data(data_length);
-				boost::asio::read(sock, boost::asio::buffer(serialized_data), ec);
-				if (ec) {
-					throw boost::system::system_error(ec); // Or handle error as appropriate
-				}
-				// Deserialize the data to get the dictionary
-				json deserialized_data = json::parse(serialized_data.begin(), serialized_data.end());
-				globalMetricsDict = deserialized_data.get<std::map<std::string, double>>();
-				// Now you can do operations with metrics_dict
-				// for (const auto& pair : globalMetricsDict) {
-				// 	std::cout << pair.first << ": " << pair.second << std::endl; // Example operation
-				// }
 			}
 		}
 		catch (...)
@@ -187,6 +137,7 @@ void sibr::RemotePointView::onRenderIBR(sibr::IRenderTarget & dst, const sibr::C
 	if (!_scene)
 		return;
 
+	bool preview = false;
 	{
 		std::lock_guard<std::mutex> lg(_renderDataMutex);
 		if (eye.view() != _remoteInfo.view || eye.viewproj() != _remoteInfo.viewProj)
@@ -205,9 +156,10 @@ void sibr::RemotePointView::onRenderIBR(sibr::IRenderTarget & dst, const sibr::C
 			_imageResize = true;
 			_timestampRequested++;
 		}
+		preview = _timestampReceived != _timestampRequested;
 	}
 
-	if (_showSfM || _timestampReceived == 0)
+	if (_showSfM || _timestampReceived == 0 || (preview && _renderSfMInMotion))
 	{
 		_pointbasedrenderer->process(_scene->proxies()->proxy(), eye, dst);
 	}
@@ -237,35 +189,13 @@ void sibr::RemotePointView::onGUI()
 	const std::string guiName = "Remote Viewer Settings (" + name() + ")";
 	if (ImGui::Begin(guiName.c_str())) 
 	{
-		ImGui::Text("Run/Pause");
-		ImGui::Dummy(ImVec2(0.0f, 5.0f));
+		ImGui::Checkbox("Show Input Points", &_showSfM);
+		ImGui::Checkbox("Show Input Points during Motion", &_renderSfMInMotion);
 		ImGui::Checkbox("Train", &_doTrainingBool);
-		ImGui::Dummy(ImVec2(0.0f, 10.0f));
-		ImGui::Text("Render Mode");
-		ImGui::Dummy(ImVec2(0.0f, 5.0f));
-        // Render mode radio buttons
-        for (int i = 0; i < _renderItems.size(); ++i) {
-			if (ImGui::RadioButton(_renderItems[i].c_str(), &_item_current, i)) {
-				// When the "Show Input Points" option is selected, set _showSfM accordingly
-				_showSfM = (_renderItems[i] == "Show Input Points");
-			}
-		}
-		ImGui::Dummy(ImVec2(0.0f, 10.0f));
-		ImGui::Text("Visualization & Processing Controls");
-		ImGui::Dummy(ImVec2(0.0f, 5.0f));
+		ImGui::Checkbox("SHs Python", &_doSHsPython);
+		ImGui::Checkbox("Rot-Scale Python", &_doRotScalePython);
 		ImGui::Checkbox("Keep model alive (after training)", &_keepAlive);
-		ImGui::Dummy(ImVec2(0.0f, 10.0f));
-		ImGui::Text("Scaling Modifier");
-		ImGui::Dummy(ImVec2(0.0f, 5.0f));
-		ImGui::PushItemWidth(250.0f);
-		ImGui::SliderFloat("##Scaling Modifier", &_scalingModifier, 0.001f, 1.0f);
-		ImGui::PopItemWidth(); 
-
-		ImGui::Dummy(ImVec2(0.0f, 10.0f));
-        ImGui::Text("Live Performance Metrics");
-        for (const auto& pair : globalMetricsDict) {
-            ImGui::Text("%s: %.3f", pair.first.c_str(), pair.second);
-        }
+		ImGui::SliderFloat("Scaling Modifier", &_scalingModifier, 0.001f, 1.0f);
 	}
 	ImGui::End();
 }

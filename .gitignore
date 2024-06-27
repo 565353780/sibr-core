@@ -3,6 +3,7 @@ install/
 subbuild/
 cmake-gui.exe.stackdump
 __pycache__/
+.cache
 
 # emacs garbage
 \#*
