@@ -14,7 +14,6 @@ __pycache__/
 *.swo
 *.idea/
 *.log
-*.sh
 *.tmp
 
 hs_err_*
