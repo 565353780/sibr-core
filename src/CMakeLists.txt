@@ -83,7 +83,7 @@ if (BUILD_SIBR)
   add_subdirectory(core/video)
 endif()
 
-set(PROJECTS_ON_AT_FIRST_BUILD "basic" "gaussianviewer" "remote" "remote_v2")
+set(PROJECTS_ON_AT_FIRST_BUILD "basic" "gaussianviewer" "remote")
 
 foreach(subdir ${SUBDIRS})
   message(STATUS "Adding ${subdir} project")
